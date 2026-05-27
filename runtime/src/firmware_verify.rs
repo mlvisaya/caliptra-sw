@@ -15,6 +15,7 @@ Abstract:
 use crate::mutrefbytes;
 use crate::Drivers;
 use caliptra_cfi_derive::cfi_impl_fn;
+use caliptra_common::cprintln;
 use caliptra_common::mailbox_api::populate_checksum;
 use caliptra_common::mailbox_api::MailboxRespHeader;
 use caliptra_common::mailbox_api::{FirmwareVerifyResp, FirmwareVerifyResult};
@@ -44,9 +45,15 @@ impl FirmwareVerifyCmd {
     #[inline(never)]
     pub(crate) fn execute(drivers: &mut Drivers, src: VerifySrc) -> CaliptraResult<MboxStatusE> {
         let mut manifest = ImageManifest::new_zeroed();
+        cprintln!("[DBG-FW-VERIFY] ImageManifest size_of = {}", size_of::<ImageManifest>() as u32);
+        cprintln!("[DBG-FW-VERIFY] mbox_len (raw_mailbox_contents) = {}", drivers.mbox.raw_mailbox_contents().len() as u32);
+        cprintln!("[DBG-FW-VERIFY] mbox dlen = {}", drivers.mbox.dlen());
+        cprintln!("[DBG-FW-VERIFY] subsystem_mode = {}", drivers.soc_ifc.subsystem_mode() as u32);
         let (image_size, image_source) = match src {
             VerifySrc::Mbox => {
+                cprintln!("[DBG-FW-VERIFY] Taking Mbox path (direct mailbox)");
                 let raw_data = drivers.mbox.raw_mailbox_contents();
+                cprintln!("[DBG-FW-VERIFY] raw_data.len() = {}", raw_data.len() as u32);
                 Self::load_manifest_from_mbox(&mut manifest, raw_data)?;
                 (
                     drivers.mbox.dlen(),
@@ -57,6 +64,9 @@ impl FirmwareVerifyCmd {
                 axi_address,
                 image_size,
             } => {
+                cprintln!("[DBG-FW-VERIFY] Taking External path (staging SRAM via DMA)");
+                cprintln!("[DBG-FW-VERIFY] axi_address = 0x{:08X}", axi_address.lo);
+                cprintln!("[DBG-FW-VERIFY] image_size = {}", image_size);
                 Self::load_manifest_from_external(&mut manifest, &mut drivers.dma, axi_address)?;
                 (
                     image_size,
@@ -114,12 +124,15 @@ impl FirmwareVerifyCmd {
         manifest: &mut ImageManifest,
         fw_payload: &[u8],
     ) -> CaliptraResult<()> {
+        cprintln!("[DBG-FW-VERIFY] load_manifest_from_mbox: fw_payload.len() = {}, ImageManifest size = {}", fw_payload.len() as u32, size_of::<ImageManifest>() as u32);
         if fw_payload.len() < size_of::<ImageManifest>() {
+            cprintln!("[DBG-FW-VERIFY] ERROR: fw_payload too small! {} < {}", fw_payload.len() as u32, size_of::<ImageManifest>() as u32);
             return Err(CaliptraError::IMAGE_VERIFIER_ERR_MANIFEST_SIZE_MISMATCH);
         }
         manifest
             .as_mut_bytes()
             .copy_from_slice(fw_payload[..size_of::<ImageManifest>()].as_ref());
+        cprintln!("[DBG-FW-VERIFY] load_manifest_from_mbox: success");
         Ok(())
     }
 

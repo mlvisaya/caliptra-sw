@@ -228,6 +228,7 @@ fn handle_command(drivers: &mut Drivers) -> CaliptraResult<MboxStatusE> {
     }
 
     if drivers.mbox.cmd() == CommandId::FIRMWARE_VERIFY {
+        cprintln!("[DBG-DISPATCH] FIRMWARE_VERIFY via direct mbox path (non-subsystem)");
         return firmware_verify::FirmwareVerifyCmd::execute(
             drivers,
             firmware_verify::VerifySrc::Mbox,
@@ -267,6 +268,7 @@ fn handle_command(drivers: &mut Drivers) -> CaliptraResult<MboxStatusE> {
             .map_err(|_| CaliptraError::RUNTIME_INSUFFICIENT_MEMORY)?;
 
         if external_cmd.command_id == CommandId::FIRMWARE_VERIFY.into() {
+            cprintln!("[DBG-DISPATCH] FIRMWARE_VERIFY via EXTERNAL_MAILBOX_CMD (staging SRAM)");
             let axi_addr = AxiAddr {
                 lo: external_cmd.axi_address_start_low,
                 hi: external_cmd.axi_address_start_high,
