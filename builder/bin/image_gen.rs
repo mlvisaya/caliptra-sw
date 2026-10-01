@@ -26,6 +26,10 @@ fn main() {
             arg!(--"rom-with-log" [FILE] "ROM binary image (with logging)")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            arg!(--"rom-fpga-with-log" [FILE] "FPGA ROM binary image (with logging)")
+                .value_parser(value_parser!(PathBuf)),
+        )
         .arg(arg!(--"fw" [FILE] "FW bundle image").value_parser(value_parser!(PathBuf)))
         .arg(
             arg!(--"fw-svn" [VALUE] "Security Version Number of firmware image")
@@ -72,6 +76,11 @@ fn main() {
 
     if let Some(path) = args.get_one::<PathBuf>("rom-with-log") {
         let rom = caliptra_builder::build_firmware_rom(&firmware::ROM_WITH_UART).unwrap();
+        valid_cmd = true;
+        std::fs::write(path, rom).unwrap();
+    }
+    if let Some(path) = args.get_one::<PathBuf>("rom-fpga-with-log") {
+        let rom = caliptra_builder::build_firmware_rom(&firmware::ROM_FPGA_WITH_UART).unwrap();
         valid_cmd = true;
         std::fs::write(path, rom).unwrap();
     }
