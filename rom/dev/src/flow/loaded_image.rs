@@ -18,21 +18,6 @@ use caliptra_drivers::{CaliptraResult, Sha2_512_384};
 use caliptra_error::CaliptraError;
 use caliptra_image_types::{ImageManifest, ImageTocEntry};
 
-/// Verify the FMC and runtime images after they have been loaded into ICCM.
-#[cfg_attr(feature = "cfi", cfi_mod_fn)]
-pub(super) fn verify_fmc_and_runtime(
-    manifest: &ImageManifest,
-    sha2_512_384: &mut Sha2_512_384,
-) -> CaliptraResult<()> {
-    verify_entry(
-        &manifest.fmc,
-        sha2_512_384,
-        CaliptraError::IMAGE_VERIFIER_ERR_FMC_DIGEST_FAILURE,
-        CaliptraError::IMAGE_VERIFIER_ERR_FMC_DIGEST_MISMATCH,
-    )?;
-    verify_runtime(manifest, sha2_512_384)
-}
-
 /// Verify the runtime image after it has been loaded into ICCM.
 #[cfg_attr(feature = "cfi", cfi_mod_fn)]
 pub(super) fn verify_runtime(
