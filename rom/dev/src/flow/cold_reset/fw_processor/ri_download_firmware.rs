@@ -21,6 +21,12 @@ pub struct RiDownloadFirmwareCmd;
 impl RiDownloadFirmwareCmd {
     #[inline(always)]
     pub(crate) fn execute(dma: &mut Dma, soc_ifc: &mut SocIfc) -> CaliptraResult<u32> {
+        let recovery_interface_base_addr = soc_ifc.recovery_interface_base_addr();
+        cprintln!(
+            "[fwproc] RI_BASE=0x{:08x}",
+            recovery_interface_base_addr as u32
+        );
+
         // Download the firmware image from the recovery interface.
         cprintln!("[fwproc] Downloading image from RRI to MCU SRAM");
         let image_size_bytes =

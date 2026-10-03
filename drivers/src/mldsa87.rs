@@ -117,19 +117,8 @@ impl<'a> Mldsa87<'a> {
     }
 
     #[cfg(feature = "emu")]
-    fn trace_status(regs: RegisterBlock<caliptra_ureg::RealMmioMut>, event: &str, phase: &str) {
-        let status = u32::from(regs.mldsa_status().read());
-        let error_global = u32::from(regs.intr_block_rf().error_global_intr_r().read());
-        let error_internal = u32::from(regs.intr_block_rf().error_internal_intr_r().read());
-        crate::cprintln!(
-            "[mldsa] {} {} status=0x{:08x} error_global=0x{:08x} error_internal=0x{:08x}",
-            event,
-            phase,
-            status,
-            error_global,
-            error_internal
-        );
-    }
+    #[inline(always)]
+    fn trace_status(_regs: RegisterBlock<caliptra_ureg::RealMmioMut>, _event: &str, _phase: &str) {}
 
     #[cfg(not(feature = "emu"))]
     #[inline(always)]

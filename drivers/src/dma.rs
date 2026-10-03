@@ -23,14 +23,13 @@ use caliptra_registers::axi_dma::{
     enums::{RdRouteE, WrRouteE},
     AxiDmaReg, RegisterBlock,
 };
-use caliptra_registers::i3ccsr::RegisterBlock as I3CRegisterBlock;
 use caliptra_registers::otp_ctrl::RegisterBlock as FuseCtrlRegisterBlock;
 use caliptra_registers::sha512_acc::enums::ShaCmdE;
 use caliptra_registers::sha512_acc::RegisterBlock as ShaAccRegisterBlock;
 use caliptra_ureg::{Mmio, MmioMut, RealMmioMut};
 use core::{cell::Cell, mem::size_of, ops::Add};
 
-const I3C_BLOCK_SIZE: u32 = 64;
+const RECOVERY_FIFO_BLOCK_SIZE: u32 = 64;
 pub const MCU_SRAM_OFFSET: u64 = 0xc0_0000;
 // SHA384 of empty stream
 const SHA384_EMPTY: Array4x12 = Array4x12::new([
@@ -132,12 +131,10 @@ pub struct DmaReadTransaction {
     pub block_mode: BlockMode,
 }
 
-/// Specified the kind of block size to be used for the DMA, either I3C (recovery)
-/// or anything else. I3C requires a specific block size to be programmed for
-/// DMA to work.
+/// Specifies whether the DMA transfer reads the recovery FIFO or another source.
 #[derive(Clone, Copy)]
 pub enum BlockMode {
-    /// Reading from the I3C recovery register indirect fifo data
+    /// Reading from the recovery interface indirect FIFO data register.
     RecoveryIndirectFifoData,
     /// Reading from anywhere else
     Other,
@@ -146,7 +143,7 @@ pub enum BlockMode {
 impl DmaReadTransaction {
     fn block_size(&self) -> u32 {
         match self.block_mode {
-            BlockMode::RecoveryIndirectFifoData => I3C_BLOCK_SIZE,
+            BlockMode::RecoveryIndirectFifoData => RECOVERY_FIFO_BLOCK_SIZE,
             BlockMode::Other => 0,
         }
     }
@@ -496,7 +493,7 @@ impl MmioMut for &DmaMmio<'_> {
     }
 }
 
-// Wrapper around the DMA peripheral that provides access to the I3C recovery interface.
+// Wrapper around the DMA peripheral that provides access to the USB OCP recovery interface.
 pub struct DmaRecovery<'a> {
     recovery_base: AxiAddr,
     caliptra_base: AxiAddr,
@@ -505,8 +502,27 @@ pub struct DmaRecovery<'a> {
 }
 
 impl<'a> DmaRecovery<'a> {
-    const RECOVERY_REGISTER_OFFSET: usize = 0x100;
-    const INDIRECT_FIFO_DATA_OFFSET: u32 = 0x68;
+    const PROT_CAP_2_OFFSET: u32 = 0x08;
+    const DEVICE_STATUS_0_OFFSET: u32 = 0x28;
+    const DEVICE_RESET_OFFSET: u32 = 0x68;
+    const RECOVERY_CTRL_OFFSET: u32 = 0x6c;
+    const RECOVERY_STATUS_OFFSET: u32 = 0x70;
+    const INDIRECT_FIFO_CTRL_0_OFFSET: u32 = 0x184;
+    const INDIRECT_FIFO_CTRL_1_OFFSET: u32 = 0x188;
+    const INDIRECT_FIFO_DATA_OFFSET: u32 = 0x1a0;
+
+    const PROT_CAP_2_AGENT_CAPS_SHIFT: u32 = 16;
+    const DEVICE_STATUS_MASK: u32 = 0xff;
+    const RECOVERY_REASON_SHIFT: u32 = 16;
+    const RECOVERY_REASON_MASK: u32 = 0xffff << Self::RECOVERY_REASON_SHIFT;
+    const RECOVERY_STATUS_MASK: u32 = 0xf;
+    const RECOVERY_IMAGE_INDEX_SHIFT: u32 = 4;
+    const RECOVERY_IMAGE_INDEX_MASK: u32 = 0xf << Self::RECOVERY_IMAGE_INDEX_SHIFT;
+    const ACTIVATE_RECOVERY_IMAGE_SHIFT: u32 = 16;
+    const ACTIVATE_RECOVERY_IMAGE_MASK: u32 = 0xff << Self::ACTIVATE_RECOVERY_IMAGE_SHIFT;
+    const DEVICE_RESET_CTRL_MASK: u32 = 0xff;
+    const INDIRECT_FIFO_RESET_SHIFT: u32 = 8;
+    const INDIRECT_FIFO_RESET_MASK: u32 = 0xff << Self::INDIRECT_FIFO_RESET_SHIFT;
 
     /// Max bytes per DMA transfer; mirrors `DMA_MAX_XFER_SIZE` in
     /// `axi_dma_ctrl.sv`. A larger `byte_count` is rejected by the HW.
@@ -718,46 +734,20 @@ impl<'a> DmaRecovery<'a> {
         }
     }
 
-    /// Returns a register block that can be used to read
-    /// registers from this peripheral, but cannot write.
     #[inline(always)]
-    pub fn with_regs<T, F>(&self, f: F) -> CaliptraResult<T>
-    where
-        F: FnOnce(I3CRegisterBlock<&DmaMmio>) -> T,
-    {
-        let mmio = DmaMmio::new(self.recovery_base, self.dma);
-        // SAFETY: we aren't referencing memory directly
-        let regs = unsafe {
-            I3CRegisterBlock::new_with_mmio(
-                // substract the recovery offset since all recovery registers are relative to 0 but need to be relative to 0x100
-                core::ptr::null_mut::<u32>()
-                    .sub(Self::RECOVERY_REGISTER_OFFSET / core::mem::size_of::<u32>()),
-                &mmio,
-            )
-        };
-        let t = f(regs);
-        mmio.check_error(t)
+    fn read_recovery_reg(&self, offset: u32) -> u32 {
+        self.dma.read_dword(self.recovery_base + offset)
     }
 
-    /// Return a register block that can be used to read and
-    /// write this peripheral's registers.
     #[inline(always)]
-    pub fn with_regs_mut<T, F>(&self, f: F) -> CaliptraResult<T>
-    where
-        F: FnOnce(I3CRegisterBlock<&DmaMmio>) -> T,
-    {
-        let mmio = DmaMmio::new(self.recovery_base, self.dma);
-        // SAFETY: we aren't referencing memory directly
-        let regs = unsafe {
-            I3CRegisterBlock::new_with_mmio(
-                // substract the recovery offset since all recovery registers are relative to 0 but need to be relative to 0x100
-                core::ptr::null_mut::<u32>()
-                    .sub(Self::RECOVERY_REGISTER_OFFSET / core::mem::size_of::<u32>()),
-                &mmio,
-            )
-        };
-        let t = f(regs);
-        mmio.check_error(t)
+    fn write_recovery_reg(&self, offset: u32, value: u32) {
+        self.dma.write_dword(self.recovery_base + offset, value);
+    }
+
+    #[inline(always)]
+    fn modify_recovery_reg(&self, offset: u32, mask: u32, value: u32) {
+        let current = self.read_recovery_reg(offset);
+        self.write_recovery_reg(offset, (current & !mask) | (value & mask));
     }
 
     fn with_sha_acc<T, F>(&self, f: F) -> CaliptraResult<T>
@@ -821,27 +811,27 @@ impl<'a> DmaRecovery<'a> {
     }
 
     pub fn wait_for_activation(&self) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            // Set device status to 'Recovery Pending (waiting for activation)'.
-            recovery
-                .device_status_0()
-                .modify(|val| val.dev_status(Self::DEVICE_STATUS_PENDING));
+        // Set device status to 'Recovery Pending (waiting for activation)'.
+        self.modify_recovery_reg(
+            Self::DEVICE_STATUS_0_OFFSET,
+            Self::DEVICE_STATUS_MASK,
+            Self::DEVICE_STATUS_PENDING,
+        );
 
-            // Read RECOVERY_CTRL register 'Activate Recovery Image' field for 'Activate Recovery Image' (0xF) command.
-            while recovery.recovery_ctrl().read().activate_rec_img()
-                != Self::ACTIVATE_RECOVERY_IMAGE_CMD
-            {}
-        })
+        // Wait for RECOVERY_CTRL.ACTIVATE_REC_IMG to contain the activate command.
+        while (self.read_recovery_reg(Self::RECOVERY_CTRL_OFFSET)
+            & Self::ACTIVATE_RECOVERY_IMAGE_MASK)
+            >> Self::ACTIVATE_RECOVERY_IMAGE_SHIFT
+            != Self::ACTIVATE_RECOVERY_IMAGE_CMD
+        {}
+        Ok(())
     }
 
     pub fn wait_for_device_reset(&self) -> CaliptraResult<()> {
-        self.with_regs(|regs| {
-            let recovery = regs.sec_fw_recovery_if();
-            while recovery.device_reset().read().reset_ctrl()
-                != Self::DEVICE_RESET_CTRL_RESET_DEVICE
-            {}
-        })
+        while self.read_recovery_reg(Self::DEVICE_RESET_OFFSET) & Self::DEVICE_RESET_CTRL_MASK
+            != Self::DEVICE_RESET_CTRL_RESET_DEVICE
+        {}
+        Ok(())
     }
 
     // Downloads an image from the recovery interface to the MCU SRAM.
@@ -948,86 +938,62 @@ impl<'a> DmaRecovery<'a> {
             fw_image_index
         );
 
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            // Set PROT_CAP2.AGENT_CAPS
-            // - Bit0  to 1 ('Device ID support')
-            // - Bit4  to 1 ('Device Status support')
-            // - Bit5  to 1 ('Recovery memory access / INDIRECT_CTRL support')
-            // - Bit7  to 1 ('Push C-image support')
-            // - Bit9  to 1 ('Hardware Status support')
-            // - Bit11 to 1 ('Flashless boot')
-            // - Bit12 to 1 ('FIFO CMS support')
-            // Set PROT_CAP2.REC_PROT_VERSION to 0x101 (1.1).
-            recovery.prot_cap_2().modify(|val| {
-                val.agent_caps(
-                    Self::PROT_CAP2_DEVICE_ID_SUPPORT // mandatory
-                        | Self::PROT_CAP2_DEVICE_STATUS_SUPPORT // mandatory
-                        | Self::PROT_CAP2_RECOVERY_MEMORY_ACCESS_SUPPORT
-                        | Self::PROT_CAP2_FIFO_CMS_SUPPORT
-                        | Self::PROT_CAP2_HW_STATUS_SUPPORT
-                        | Self::PROT_CAP2_FLASHLESS_BOOT_VALUE
-                        | Self::PROT_CAP2_PUSH_C_IMAGE_SUPPORT,
-                )
-                .rec_prot_version(0x101) // 1.1
-            });
+        let agent_caps = Self::PROT_CAP2_DEVICE_ID_SUPPORT // mandatory
+            | Self::PROT_CAP2_DEVICE_STATUS_SUPPORT // mandatory
+            | Self::PROT_CAP2_RECOVERY_MEMORY_ACCESS_SUPPORT
+            | Self::PROT_CAP2_FIFO_CMS_SUPPORT
+            | Self::PROT_CAP2_HW_STATUS_SUPPORT
+            | Self::PROT_CAP2_FLASHLESS_BOOT_VALUE
+            | Self::PROT_CAP2_PUSH_C_IMAGE_SUPPORT;
+        self.modify_recovery_reg(
+            Self::PROT_CAP_2_OFFSET,
+            (u16::MAX as u32) << Self::PROT_CAP_2_AGENT_CAPS_SHIFT,
+            agent_caps << Self::PROT_CAP_2_AGENT_CAPS_SHIFT,
+        );
 
-            // Set DEVICE_STATUS:Byte0 to 0x3 ('Recovery mode - ready to accept recovery image').
-            // Set DEVICE_STATUS:Byte[2:3] to 0x12 ('Recovery Reason Codes' 0x12 - Flashless/Streaming Boot (FSB)).
-            cprintln!(
-                "[dma-recovery] Set device status {}",
-                Self::DEVICE_STATUS_READY_TO_ACCEPT_RECOVERY_IMAGE_VALUE
-            );
-            recovery.device_status_0().modify(|val| {
-                val.rec_reason_code(Self::RECOVERY_REASON_FLASHLESS_STREAMING_BOOT)
-                    .dev_status(Self::DEVICE_STATUS_READY_TO_ACCEPT_RECOVERY_IMAGE_VALUE)
-            });
+        // Set DEVICE_STATUS to recovery mode with the flashless boot reason.
+        cprintln!(
+            "[dma-recovery] Set device status {}",
+            Self::DEVICE_STATUS_READY_TO_ACCEPT_RECOVERY_IMAGE_VALUE
+        );
+        self.set_device_status_with_recovery_reason(
+            Self::DEVICE_STATUS_READY_TO_ACCEPT_RECOVERY_IMAGE_VALUE,
+            Self::RECOVERY_REASON_FLASHLESS_STREAMING_BOOT,
+        )?;
 
-            // Set RECOVERY_STATUS register 'Device Recovery Status' field to 0x1 ('Awaiting recovery image')
-            // and 'Recovery Image Index' to recovery image index.
-            recovery.recovery_status().modify(|recovery_status_val| {
-                recovery_status_val
-                    .rec_img_index(fw_image_index)
-                    .dev_rec_status(Self::RECOVERY_STATUS_AWAITING_RECOVERY_IMAGE)
-            });
-        })?;
+        self.set_recovery_status(
+            Self::RECOVERY_STATUS_AWAITING_RECOVERY_IMAGE,
+            fw_image_index,
+        )?;
 
         // Loop on the 'payload_available' signal for the recovery image details to be available.
         while !self.dma.payload_available() {}
-        let image_size_bytes = self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-
-            // Read the image size from INDIRECT_FIFO_CTRL1 register. Image size is in DWORDs.
-            let image_size_dwords = recovery.indirect_fifo_ctrl_1().read();
-            let image_size_bytes = image_size_dwords * size_of::<u32>() as u32;
-            cprintln!(
-                "[dma-recovery] Payload available, {} bytes",
-                image_size_bytes
-            );
-            Ok::<u32, CaliptraError>(image_size_bytes)
-        })??;
+        // Read the image size from INDIRECT_FIFO_CTRL_1. Image size is in DWORDs.
+        let image_size_dwords = self.read_recovery_reg(Self::INDIRECT_FIFO_CTRL_1_OFFSET);
+        let image_size_bytes = image_size_dwords * size_of::<u32>() as u32;
+        cprintln!(
+            "[dma-recovery] Payload available, {} bytes",
+            image_size_bytes
+        );
 
         Ok(image_size_bytes)
     }
 
     pub fn set_recovery_status(&self, status: u32, image_idx: u32) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            recovery.recovery_status().modify(|recovery_status_val| {
-                recovery_status_val
-                    .rec_img_index(image_idx)
-                    .dev_rec_status(status)
-            });
-        })
+        let mask = Self::RECOVERY_STATUS_MASK | Self::RECOVERY_IMAGE_INDEX_MASK;
+        let value = (status & Self::RECOVERY_STATUS_MASK)
+            | ((image_idx << Self::RECOVERY_IMAGE_INDEX_SHIFT) & Self::RECOVERY_IMAGE_INDEX_MASK);
+        self.modify_recovery_reg(Self::RECOVERY_STATUS_OFFSET, mask, value);
+        Ok(())
     }
 
     pub fn set_device_status(&self, status: u32) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            recovery
-                .device_status_0()
-                .modify(|device_status_val| device_status_val.dev_status(status));
-        })
+        self.modify_recovery_reg(
+            Self::DEVICE_STATUS_0_OFFSET,
+            Self::DEVICE_STATUS_MASK,
+            status,
+        );
+        Ok(())
     }
 
     pub fn set_device_status_with_recovery_reason(
@@ -1035,14 +1001,11 @@ impl<'a> DmaRecovery<'a> {
         status: u32,
         recovery_reason: u32,
     ) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            recovery.device_status_0().modify(|device_status_val| {
-                device_status_val
-                    .dev_status(status)
-                    .rec_reason_code(recovery_reason)
-            });
-        })
+        let mask = Self::DEVICE_STATUS_MASK | Self::RECOVERY_REASON_MASK;
+        let value = (status & Self::DEVICE_STATUS_MASK)
+            | ((recovery_reason << Self::RECOVERY_REASON_SHIFT) & Self::RECOVERY_REASON_MASK);
+        self.modify_recovery_reg(Self::DEVICE_STATUS_0_OFFSET, mask, value);
+        Ok(())
     }
 
     pub fn set_boot_failure_reason(&self, recovery_reason: u32) -> CaliptraResult<()> {
@@ -1053,12 +1016,12 @@ impl<'a> DmaRecovery<'a> {
     }
 
     pub fn reset_indirect_fifo_ctrl(&self) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            recovery
-                .indirect_fifo_ctrl_0()
-                .modify(|val| val.reset(Self::RESET_VAL));
-        })
+        self.modify_recovery_reg(
+            Self::INDIRECT_FIFO_CTRL_0_OFFSET,
+            Self::INDIRECT_FIFO_RESET_MASK,
+            Self::RESET_VAL << Self::INDIRECT_FIFO_RESET_SHIFT,
+        );
+        Ok(())
     }
 
     /// Wait for the payload_available signal to deassert.
@@ -1067,12 +1030,12 @@ impl<'a> DmaRecovery<'a> {
     }
 
     pub fn reset_recovery_ctrl_activate_rec_img(&self) -> CaliptraResult<()> {
-        self.with_regs_mut(|regs_mut| {
-            let recovery = regs_mut.sec_fw_recovery_if();
-            recovery
-                .recovery_ctrl()
-                .modify(|recovery_ctrl_val| recovery_ctrl_val.activate_rec_img(Self::RESET_VAL));
-        })
+        self.modify_recovery_reg(
+            Self::RECOVERY_CTRL_OFFSET,
+            Self::ACTIVATE_RECOVERY_IMAGE_MASK,
+            Self::RESET_VAL << Self::ACTIVATE_RECOVERY_IMAGE_SHIFT,
+        );
+        Ok(())
     }
 
     pub fn transfer_payload_to_axi(
@@ -1107,7 +1070,7 @@ impl<'a> DmaRecovery<'a> {
         // between would reset the pipeline.
         //
         // The per-dword workaround below is only needed because the FPGA
-        // cannot do fixed-address burst transfers (e.g. I3C recovery FIFO).
+        // cannot do fixed-address burst transfers (e.g. the recovery FIFO).
         // Normal AXI-to-AXI (non-fixed) burst transfers work fine on FPGA.
         if read_transaction.aes_mode || read_transaction.aes_gcm {
             self.dma.flush();
@@ -1120,7 +1083,7 @@ impl<'a> DmaRecovery<'a> {
         self.dma.flush();
 
         for i in (0..read_transaction.length).step_by(4) {
-            // if this is an I3C transfer, wait for payload available
+            // If this is a recovery FIFO transfer, wait for payload availability.
             if matches!(
                 read_transaction.block_mode,
                 BlockMode::RecoveryIndirectFifoData
