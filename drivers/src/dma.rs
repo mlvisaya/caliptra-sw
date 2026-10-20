@@ -502,14 +502,15 @@ pub struct DmaRecovery<'a> {
 }
 
 impl<'a> DmaRecovery<'a> {
-    const PROT_CAP_2_OFFSET: u32 = 0x08;
-    const DEVICE_STATUS_0_OFFSET: u32 = 0x28;
-    const DEVICE_RESET_OFFSET: u32 = 0x68;
-    const RECOVERY_CTRL_OFFSET: u32 = 0x6c;
-    const RECOVERY_STATUS_OFFSET: u32 = 0x70;
-    const INDIRECT_FIFO_CTRL_0_OFFSET: u32 = 0x184;
-    const INDIRECT_FIFO_CTRL_1_OFFSET: u32 = 0x188;
-    const INDIRECT_FIFO_DATA_OFFSET: u32 = 0x1a0;
+    // USB OCP recovery offsets from usb2/systemrdl/usb_ocp_recovery_reg.rdl.
+    const PROT_CAP_2_OFFSET: u32 = 0x0c;
+    const DEVICE_STATUS_0_OFFSET: u32 = 0x30;
+    const DEVICE_RESET_OFFSET: u32 = 0x38;
+    const RECOVERY_CTRL_OFFSET: u32 = 0x3c;
+    const RECOVERY_STATUS_OFFSET: u32 = 0x40;
+    const INDIRECT_FIFO_CTRL_0_OFFSET: u32 = 0x48;
+    const INDIRECT_FIFO_CTRL_1_OFFSET: u32 = 0x4c;
+    const INDIRECT_FIFO_DATA_OFFSET: u32 = 0x68;
 
     const PROT_CAP_2_AGENT_CAPS_SHIFT: u32 = 16;
     const DEVICE_STATUS_MASK: u32 = 0xff;
